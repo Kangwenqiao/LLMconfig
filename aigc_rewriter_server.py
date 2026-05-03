@@ -28,6 +28,7 @@ N_CTX = int(os.environ.get("AIGC_REWRITER_N_CTX", "4096"))
 MAX_BATCH_SIZE = max(1, int(os.environ.get("AIGC_REWRITER_MAX_BATCH_SIZE", "32")))
 DEFAULT_STRENGTH = os.environ.get("AIGC_REWRITER_DEFAULT_STRENGTH", "high").lower()
 PROMPT_MODE = os.environ.get("AIGC_REWRITER_PROMPT_MODE", "minimal").lower()
+SENTENCES_PER_CALL = max(1, int(os.environ.get("AIGC_REWRITER_SENTENCES_PER_CALL", "4")))
 
 # GPU 空闲释放配置
 GPU_IDLE_TIMEOUT = int(os.environ.get("AIGC_REWRITER_IDLE_TIMEOUT", "300"))  # 默认5分钟空闲后释放
@@ -293,6 +294,17 @@ def _missing_placeholders(original_text: str, rewritten_text: str) -> list[str]:
     return [placeholder for placeholder in placeholders if placeholder not in rewritten_text]
 
 
+def _split_sentences(text: str) -> list[str]:
+    """按中文论文常见句末标点切分，保留句末标点和紧随其后的引用占位符。"""
+    pattern = r".+?(?:[。！？!?](?:@@[A-Z_]+_\d+@@)*|$)"
+    sentences = [match.group(0).strip() for match in re.finditer(pattern, text, flags=re.DOTALL)]
+    return [sentence for sentence in sentences if sentence]
+
+
+def _group_sentences(sentences: list[str], size: int) -> list[str]:
+    return ["".join(sentences[index:index + size]) for index in range(0, len(sentences), size)]
+
+
 def extract_pure_text(content: str, original_text: str) -> str:
     """
     从模型输出中提取纯净的重写文本。
@@ -533,6 +545,30 @@ def _create_rewrite(model: Llama, text: str, temperature: float, max_tokens: int
     if is_instruction_residue(original_text):
         return "", 0.0, 0
 
+    sentences = _split_sentences(original_text)
+    if SENTENCES_PER_CALL > 0 and len(sentences) > SENTENCES_PER_CALL:
+        rewritten_chunks: list[str] = []
+        calls = 0
+        for chunk in _group_sentences(sentences, SENTENCES_PER_CALL):
+            chunk_rewritten, _chunk_similarity, chunk_passes = _create_rewrite(
+                model=model,
+                text=chunk,
+                temperature=temperature,
+                max_tokens=max(256, min(max_tokens, 1024)),
+                strength=strength,
+            )
+            calls += max(chunk_passes, 1)
+            rewritten_chunks.append(chunk_rewritten)
+
+        combined_text = "".join(rewritten_chunks)
+        if _missing_placeholders(original_text, combined_text):
+            return original_text, 1.0, calls
+        if len(original_text) >= 80 and len(combined_text) > len(original_text) * 1.35:
+            return original_text, 1.0, calls
+        if len(original_text) >= 80 and len(combined_text) < len(original_text) * 0.45:
+            return original_text, 1.0, calls
+        return combined_text, similarity_score(original_text, combined_text), calls
+
     current_text = text
     best_text = text
     best_similarity = 1.0
@@ -705,6 +741,7 @@ async def root():
         "idle_timeout": GPU_IDLE_TIMEOUT,
         "default_strength": DEFAULT_STRENGTH,
         "prompt_mode": PROMPT_MODE,
+        "sentences_per_call": SENTENCES_PER_CALL,
     }
 
 
