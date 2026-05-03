@@ -27,6 +27,7 @@ N_GPU_LAYERS = int(os.environ.get("AIGC_REWRITER_GPU_LAYERS", "-1"))
 N_CTX = int(os.environ.get("AIGC_REWRITER_N_CTX", "4096"))
 MAX_BATCH_SIZE = max(1, int(os.environ.get("AIGC_REWRITER_MAX_BATCH_SIZE", "32")))
 DEFAULT_STRENGTH = os.environ.get("AIGC_REWRITER_DEFAULT_STRENGTH", "high").lower()
+PROMPT_MODE = os.environ.get("AIGC_REWRITER_PROMPT_MODE", "minimal").lower()
 
 # GPU 空闲释放配置
 GPU_IDLE_TIMEOUT = int(os.environ.get("AIGC_REWRITER_IDLE_TIMEOUT", "300"))  # 默认5分钟空闲后释放
@@ -275,6 +276,23 @@ def _dedupe_repeated_text(text: str) -> str:
     return "".join(cleaned_parts).strip()
 
 
+def _normalize_technical_terms(text: str) -> str:
+    """修正常见技术术语被模型改坏的大小写。"""
+    text = re.sub(r"(?i)yolo(?=[\u4e00-\u9fffv\d-])", "YOLO", text)
+    text = re.sub(r"(?i)\bnms-free\b", "NMS-free", text)
+    text = re.sub(r"(?i)\bsgd\b", "SGD", text)
+    text = re.sub(r"(?i)\bgflops\b", "GFLOPs", text)
+    text = re.sub(r"(?i)\bmap50-95\b", "mAP50-95", text)
+    text = re.sub(r"(?i)\bmap50\b", "mAP50", text)
+    return text
+
+
+def _missing_placeholders(original_text: str, rewritten_text: str) -> list[str]:
+    """返回模型输出中丢失的上游保护占位符。"""
+    placeholders = re.findall(r"@@[A-Z_]+_\d+@@", original_text)
+    return [placeholder for placeholder in placeholders if placeholder not in rewritten_text]
+
+
 def extract_pure_text(content: str, original_text: str) -> str:
     """
     从模型输出中提取纯净的重写文本。
@@ -321,6 +339,7 @@ def extract_pure_text(content: str, original_text: str) -> str:
     text = re.sub(r"[\s{\[}\]'\"`]+$", "", text)
 
     text = _dedupe_repeated_text(_clean_json_residue(text.strip()))
+    text = _normalize_technical_terms(text)
     return text.strip()
 
 
@@ -444,6 +463,16 @@ def _build_user_content(text: str, original_text: str, pass_index: int, strength
     )
 
 
+def _build_minimal_user_content(text: str) -> str:
+    """极短提示词：不使用 system prompt 和 JSON schema，只约束保留占位符与不扩写。"""
+    return (
+        "改写下面的论文正文，保持原意，不新增内容，不扩写。"
+        "必须原样保留所有@@...@@占位符、数字、术语和引用标记。"
+        "长度接近原文。只输出改写后的正文。\n"
+        f"{text}"
+    )
+
+
 def _create_rewrite_once(
     model: Llama,
     text: str,
@@ -454,24 +483,45 @@ def _create_rewrite_once(
     pass_index: int,
 ) -> str:
     """在线程中执行同步模型推理。"""
-    messages = [
-        {"role": "system", "content": build_system_prompt(strength)},
-        {"role": "user", "content": _build_user_content(text, original_text, pass_index, strength)}
-    ]
-
-    response = model.create_chat_completion(
-        messages=messages,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        stop=["<|im_end|>"],
-        response_format={
-            "type": "json_object",
-            "schema": REWRITE_SCHEMA
-        }
-    )
+    if PROMPT_MODE == "raw":
+        messages = [{"role": "user", "content": text}]
+        response = model.create_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stop=["<|im_end|>"],
+        )
+    elif PROMPT_MODE == "minimal":
+        messages = [{"role": "user", "content": _build_minimal_user_content(text)}]
+        response = model.create_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stop=["<|im_end|>"],
+        )
+    else:
+        messages = [
+            {"role": "system", "content": build_system_prompt(strength)},
+            {"role": "user", "content": _build_user_content(text, original_text, pass_index, strength)}
+        ]
+        response = model.create_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stop=["<|im_end|>"],
+            response_format={
+                "type": "json_object",
+                "schema": REWRITE_SCHEMA
+            }
+        )
 
     content = response["choices"][0]["message"]["content"]
-    return extract_pure_text(content, original_text)
+    rewritten = extract_pure_text(content, original_text)
+    if PROMPT_MODE in {"raw", "minimal"} and _missing_placeholders(original_text, rewritten):
+        return original_text
+    if PROMPT_MODE in {"raw", "minimal"} and len(original_text) >= 80 and len(rewritten) > len(original_text) * 1.35:
+        return original_text
+    return rewritten
 
 
 def _create_rewrite(model: Llama, text: str, temperature: float, max_tokens: int, strength: str) -> tuple[str, float, int]:
@@ -491,7 +541,9 @@ def _create_rewrite(model: Llama, text: str, temperature: float, max_tokens: int
     target = SIMILARITY_TARGETS[strength]
     effective_temperature = max(temperature, 0.72) if strength == "high" else temperature
 
-    for pass_index in range(1, AUTO_PASSES[strength] + 1):
+    max_passes = 1 if PROMPT_MODE in {"raw", "minimal"} else AUTO_PASSES[strength]
+
+    for pass_index in range(1, max_passes + 1):
         pass_count = pass_index
         rewritten = _create_rewrite_once(
             model=model,
@@ -652,6 +704,7 @@ async def root():
         "gpu_loaded": llm_loaded,
         "idle_timeout": GPU_IDLE_TIMEOUT,
         "default_strength": DEFAULT_STRENGTH,
+        "prompt_mode": PROMPT_MODE,
     }
 
 
