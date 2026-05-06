@@ -63,7 +63,7 @@ curl http://localhost:1001/
 #### 文本重写
 
 ```bash
-curl -X POST "http://localhost:1001/rewrite" \
+curl -X POST "http://localhost:1002/rewrite" \
   -H "Content-Type: application/json" \
   -d '{
     "text": "人工智能技术的发展给人类社会带来了深远的影响。",

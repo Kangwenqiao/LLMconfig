@@ -864,7 +864,7 @@ def main():
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=1001,
+        port=1002,
         log_level="info"
     )
 
