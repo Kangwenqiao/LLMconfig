@@ -22,7 +22,7 @@ import uvicorn
 # 模型配置 - 下载到项目路径的models目录
 MODEL_DIR = Path(__file__).parent / "models"
 MODEL_PATH = MODEL_DIR / "qwen3-merged-aigc_zhv3-Q4_K_M.gguf"
-MODEL_WORKERS = max(1, int(os.environ.get("AIGC_REWRITER_WORKERS", "1")))
+MODEL_WORKERS = max(1, int(os.environ.get("AIGC_REWRITER_WORKERS", "2")))
 N_GPU_LAYERS = int(os.environ.get("AIGC_REWRITER_GPU_LAYERS", "-1"))
 N_CTX = int(os.environ.get("AIGC_REWRITER_N_CTX", "4096"))
 MAX_BATCH_SIZE = max(1, int(os.environ.get("AIGC_REWRITER_MAX_BATCH_SIZE", "32")))
