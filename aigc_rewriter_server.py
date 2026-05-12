@@ -21,9 +21,7 @@ SERVER_PORT = int(os.environ.get("SERVER_PORT", "8000"))
 DEFAULT_REWRITE_INSTRUCTION = os.environ.get(
     "AIGC_REWRITE_INSTRUCTION",
     (
-        "你是一个中文降AIGC文本改写器。请把用户提供的文本改写得更自然、更像人工写作。"
-        "必须保留原意、事实、数字、术语和引用标记；不要新增信息；不要解释；"
-        "不要输出标题、前缀、后缀、列表或 Markdown；只输出改写后的正文。"
+        "改写下面文本，保留原意、数字、术语和引用标记，不新增内容，不解释，只输出正文："
     ),
 )
 
@@ -75,22 +73,11 @@ def clean_model_output(content: str) -> str:
 
 
 def build_rewrite_prompt(messages: list[ChatMessage]) -> str:
-    """Build an Ollama prompt from OpenAI-compatible chat messages."""
-    system_parts = [m.content.strip() for m in messages if m.role == "system" and m.content.strip()]
+    """Build a minimal raw prompt for the AIGC GGUF completion model."""
     user_parts = [m.content.strip() for m in messages if m.role == "user" and m.content.strip()]
     source_text = user_parts[-1] if user_parts else messages[-1].content.strip()
 
-    instruction = "\n".join(system_parts + [DEFAULT_REWRITE_INSTRUCTION])
-    return (
-        "<|im_start|>system\n"
-        f"{instruction}\n"
-        "<|im_end|>\n"
-        "<|im_start|>user\n"
-        "请降AIGC改写以下文本，只返回改写后的正文：\n"
-        f"{source_text}\n"
-        "<|im_end|>\n"
-        "<|im_start|>assistant\n"
-    )
+    return f"{DEFAULT_REWRITE_INSTRUCTION}\n{source_text}"
 
 
 @asynccontextmanager
@@ -192,7 +179,7 @@ async def chat_completions(request: ChatCompletionRequest):
                     "options": {
                         "temperature": request.temperature,
                         "num_predict": request.max_tokens,
-                        "stop": ["<|im_end|>", "<|endoftext|>"],
+                        "stop": ["<|im_end|>", "<|endoftext|>", "\n\n"],
                     },
                     "raw": True,
                     "stream": False,
