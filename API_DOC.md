@@ -5,10 +5,10 @@
 - 服务地址：`http://117.50.89.11`
 - OpenAI base_url：`http://117.50.89.11/v1`
 - 客户端 model：`local`
-- Ollama 模型：`qwen3-aigc:latest`
+- Ollama 模型：`qwen3-aigc-chat:latest`
 - GGUF 模型：`qwen3-merged-aigc_zhv3-Q4_K_M.gguf`
 - 模型来源：`skskk/aigc-rewriter`
-- 推理方式：Ollama `/api/generate`，`raw: true`
+- 推理方式：Ollama `/api/chat`，显式 Qwen3 ChatML 模板
 
 ## 健康检查
 
@@ -22,8 +22,8 @@ curl http://117.50.89.11/
 {
   "status": "ok",
   "ollama_host": "http://localhost:11434",
-  "ollama_model": "qwen3-aigc:latest",
-  "available_models": ["qwen3-aigc:latest"]
+  "ollama_model": "qwen3-aigc-chat:latest",
+  "available_models": ["qwen3-aigc-chat:latest"]
 }
 ```
 
@@ -40,7 +40,7 @@ curl http://117.50.89.11/v1/models
   "object": "list",
   "data": [
     {
-      "id": "qwen3-aigc:latest",
+      "id": "qwen3-aigc-chat:latest",
       "object": "model",
       "created": 1778565202,
       "owned_by": "ollama"
@@ -120,16 +120,12 @@ print(response.choices[0].message.content)
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---:|---|
 | `model` | string | `local` | 兼容 OpenAI SDK 的占位模型名 |
-| `messages` | array | 必填 | 取最后一条 `user` 消息作为待改写文本 |
-| `temperature` | number | `0.2` | 生成温度 |
-| `max_tokens` | integer | `64` | 最大输出 token 数 |
+| `messages` | array | 必填 | 原样传给 Ollama chat，复刻旧版 llama-cpp 行为 |
+| `temperature` | number | `0.7` | 生成温度 |
+| `max_tokens` | integer | `2048` | 最大输出 token 数 |
 | `stream` | boolean | `false` | 当前不支持 SSE 流式返回 |
 
-服务端会兼容客户端较大的配置，但会做硬限制：
-
-- `max_tokens` 会按输入长度自适应，默认范围是 `64-256`；即使客户端传 `2048` 也不会照单生成 2048 token。
-- `temperature` 上限默认是 `0.3`，即使客户端传 `0.7` 也会压低，减少复读和跑题。
-- Ollama `keep_alive` 默认是 `24h`，模型会尽量保持 GPU 常驻。
+服务端不再额外切块、加 prompt 或改写客户端参数；`temperature` 和 `max_tokens` 会按请求原样传给模型。
 
 空 `messages` 会返回：
 

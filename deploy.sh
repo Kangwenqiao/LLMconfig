@@ -4,14 +4,8 @@ set -euo pipefail
 PROJECT_DIR="${PROJECT_DIR:-$HOME/LLMconfig}"
 MODEL_URL="https://huggingface.co/skskk/aigc-rewriter/resolve/main/qwen3-merged-aigc_zhv3-Q4_K_M.gguf"
 MODEL_FILE="$PROJECT_DIR/models/qwen3-merged-aigc_zhv3-Q4_K_M.gguf"
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3-aigc}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3-aigc-chat:latest}"
 SERVER_PORT="${SERVER_PORT:-8000}"
-SERVER_MIN_TOKENS="${SERVER_MIN_TOKENS:-128}"
-SERVER_MAX_TOKENS="${SERVER_MAX_TOKENS:-512}"
-SERVER_MAX_TEMPERATURE="${SERVER_MAX_TEMPERATURE:-0.45}"
-SENTENCES_PER_CALL="${SENTENCES_PER_CALL:-5}"
-CHARS_PER_CALL="${CHARS_PER_CALL:-800}"
-CHUNK_CONCURRENCY="${CHUNK_CONCURRENCY:-2}"
 OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-24h}"
 
 echo "=== Deploy AIGC Rewriter Ollama API ==="
@@ -40,15 +34,25 @@ if [ ! -f "$MODEL_FILE" ]; then
     curl -L -C - --fail -o "$MODEL_FILE" "$MODEL_URL"
 fi
 
-cat > Modelfile.qwen3-aigc <<EOF
+cat > Modelfile.qwen3-aigc-chat <<'EOF'
 FROM ./models/qwen3-merged-aigc_zhv3-Q4_K_M.gguf
+TEMPLATE """{{- range .Messages }}<|im_start|>{{ .Role }}
+{{ .Content }}<|im_end|>
+{{- end }}<|im_start|>assistant
+<think>
+
+</think>
+
+"""
 PARAMETER temperature 0.7
 PARAMETER num_ctx 4096
+PARAMETER stop <|im_end|>
+PARAMETER stop <|endoftext|>
 EOF
 
-ollama create "$OLLAMA_MODEL" -f Modelfile.qwen3-aigc
+ollama create "$OLLAMA_MODEL" -f Modelfile.qwen3-aigc-chat
 
-for model in qwen2.5:1.5b deepseek-r1:1.5b; do
+for model in qwen2.5:1.5b deepseek-r1:1.5b qwen3-aigc:latest; do
     ollama rm "$model" >/dev/null 2>&1 || true
 done
 
@@ -61,11 +65,7 @@ if [ -n "$PIDS" ]; then
 fi
 
 : > server.log
-OLLAMA_MODEL="${OLLAMA_MODEL}:latest" OLLAMA_KEEP_ALIVE="$OLLAMA_KEEP_ALIVE" \
-    SERVER_MIN_TOKENS="$SERVER_MIN_TOKENS" SERVER_MAX_TOKENS="$SERVER_MAX_TOKENS" \
-    SERVER_MAX_TEMPERATURE="$SERVER_MAX_TEMPERATURE" \
-    SENTENCES_PER_CALL="$SENTENCES_PER_CALL" CHARS_PER_CALL="$CHARS_PER_CALL" \
-    CHUNK_CONCURRENCY="$CHUNK_CONCURRENCY" \
+OLLAMA_MODEL="$OLLAMA_MODEL" OLLAMA_KEEP_ALIVE="$OLLAMA_KEEP_ALIVE" \
     SERVER_PORT="$SERVER_PORT" \
     nohup uv run aigc_rewriter_server.py > server.log 2>&1 &
 
