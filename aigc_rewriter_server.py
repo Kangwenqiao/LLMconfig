@@ -24,6 +24,8 @@ MODEL_WORKERS = max(1, int(os.environ.get("LLM_WORKERS", "1")))
 N_GPU_LAYERS = int(os.environ.get("LLM_GPU_LAYERS", "-1"))
 N_CTX = int(os.environ.get("LLM_N_CTX", "4096"))
 GPU_IDLE_TIMEOUT = int(os.environ.get("LLM_IDLE_TIMEOUT", "300"))
+SERVER_HOST = os.environ.get("LLM_HOST", "0.0.0.0")
+SERVER_PORT = int(os.environ.get("LLM_PORT", "1002"))
 
 # 全局模型状态
 llm_pool: list[Llama] = []
@@ -150,6 +152,17 @@ async def run_completion(messages: list[dict], temperature: float, max_tokens: i
         llm_queue.put_nowait(model)
 
 
+def clean_model_output(content: str) -> str:
+    """Remove model reasoning markers from user-facing responses."""
+    text = content.strip()
+    if text.startswith("<think>"):
+        if "</think>" in text:
+            text = text.split("</think>", 1)[1]
+        else:
+            text = text.removeprefix("<think>")
+    return text.strip()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -223,6 +236,7 @@ async def chat_completions(request: ChatCompletionRequest):
             request.temperature,
             request.max_tokens,
         )
+        content = clean_model_output(content)
 
         return ChatCompletionResponse(
             id=f"chatcmpl-{int(time.time())}",
@@ -244,8 +258,8 @@ def main():
     """启动服务"""
     uvicorn.run(
         app,
-        host="0.0.0.0",
-        port=1002,
+        host=SERVER_HOST,
+        port=SERVER_PORT,
         log_level="info"
     )
 

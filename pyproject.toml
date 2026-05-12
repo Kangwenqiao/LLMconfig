@@ -11,6 +11,19 @@ dependencies = [
     "uvicorn>=0.46.0",
 ]
 
+[project.scripts]
+aigc-rewriter-server = "aigc_rewriter_server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["aigc_rewriter_server"]
+
+[tool.uv]
+package = true
+
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true
