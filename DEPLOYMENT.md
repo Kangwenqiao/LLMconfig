@@ -1,5 +1,9 @@
 # AIGC Rewriter 服务部署完成
 
+## 功能说明
+
+这是一个**降 AIGC 检测率**的文本改写服务。传入 AI 生成的文本，输出改写后更自然、更像人类写作的内容。
+
 ## 服务信息
 
 - **服务器地址**: `http://117.50.218.77`
@@ -25,20 +29,36 @@ curl http://117.50.218.77/
 curl http://117.50.218.77/v1/models
 ```
 
-### 3. 聊天补全（OpenAI 兼容格式）
+### 3. 降 AIGC 文本改写
 
+**输入（AI 生成的文本）**:
+```
+人工智能技术的发展给人类社会带来了深远的影响。它不仅改变了我们的生活方式，还推动了各行各业的变革。
+```
+
+**请求**:
 ```bash
 curl -X POST http://117.50.218.77/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "local",
-    "messages": [{"role": "user", "content": "你的文本内容"}],
-    "temperature": 0.7,
-    "max_tokens": 2048
+    "messages": [{"role": "user", "content": "人工智能技术的发展给人类社会带来了深远的影响。它不仅改变了我们的生活方式，还推动了各行各业的变革。"}],
+    "temperature": 0.7
   }'
 ```
 
-### 4. Python SDK 使用
+**输出（改写后的文本）**:
+```json
+{
+  "choices": [{
+    "message": {
+      "content": "人工智能技术的发展给人类社会带来深远的影响。它不但改变了人的生活，而且推动了各个行业的发展。"
+    }
+  }]
+}
+```
+
+### 4. Python SDK 使用（降 AIGC）
 
 ```python
 from openai import OpenAI
@@ -48,13 +68,18 @@ client = OpenAI(
     api_key="not-needed"  # 本地服务不需要API key
 )
 
+# 输入 AI 生成的文本，输出改写后的内容
+ai_text = "人工智能技术的发展给人类社会带来了深远的影响。它不仅改变了我们的生活方式，还推动了各行各业的变革。"
+
 response = client.chat.completions.create(
     model="local",
-    messages=[{"role": "user", "content": "人工智能技术的发展给人类社会带来了深远的影响。"}],
+    messages=[{"role": "user", "content": ai_text}],
     temperature=0.7
 )
 
-print(response.choices[0].message.content)
+rewritten_text = response.choices[0].message.content
+print(f"原文: {ai_text}")
+print(f"改写: {rewritten_text}")
 ```
 
 ## 服务管理
