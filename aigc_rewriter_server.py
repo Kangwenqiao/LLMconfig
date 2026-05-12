@@ -18,6 +18,14 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3-aigc")
 SERVER_HOST = os.environ.get("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.environ.get("SERVER_PORT", "8000"))
+DEFAULT_REWRITE_INSTRUCTION = os.environ.get(
+    "AIGC_REWRITE_INSTRUCTION",
+    (
+        "你是一个中文降AIGC文本改写器。请把用户提供的文本改写得更自然、更像人工写作。"
+        "必须保留原意、事实、数字、术语和引用标记；不要新增信息；不要解释；"
+        "不要输出标题、前缀、后缀、列表或 Markdown；只输出改写后的正文。"
+    ),
+)
 
 
 class ChatMessage(BaseModel):
@@ -49,13 +57,40 @@ class ChatCompletionResponse(BaseModel):
 
 def clean_model_output(content: str) -> str:
     """Remove model reasoning markers from user-facing responses."""
+    if not content:
+        return ""
     text = content.strip()
-    if text.startswith(""):
-        if "" in text:
-            text = text.split("", 1)[1]
+    if text.startswith("<think>"):
+        if "</think>" in text:
+            text = text.split("</think>", 1)[1]
         else:
-            text = text.removeprefix("")
+            text = text.removeprefix("<think>")
+    text = text.replace("<|im_end|>", "").replace("<|endoftext|>", "")
+    prefixes = ("改写后的正文：", "改写后的文本：", "输出：", "正文：")
+    for prefix in prefixes:
+        if text.startswith(prefix):
+            text = text.removeprefix(prefix)
+            break
     return text.strip()
+
+
+def build_rewrite_prompt(messages: list[ChatMessage]) -> str:
+    """Build an Ollama prompt from OpenAI-compatible chat messages."""
+    system_parts = [m.content.strip() for m in messages if m.role == "system" and m.content.strip()]
+    user_parts = [m.content.strip() for m in messages if m.role == "user" and m.content.strip()]
+    source_text = user_parts[-1] if user_parts else messages[-1].content.strip()
+
+    instruction = "\n".join(system_parts + [DEFAULT_REWRITE_INSTRUCTION])
+    return (
+        "<|im_start|>system\n"
+        f"{instruction}\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        "请降AIGC改写以下文本，只返回改写后的正文：\n"
+        f"{source_text}\n"
+        "<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
 
 
 @asynccontextmanager
@@ -145,21 +180,21 @@ async def chat_completions(request: ChatCompletionRequest):
     if not request.messages:
         raise HTTPException(status_code=400, detail="messages cannot be empty")
 
-    # 获取最后一条用户消息作为输入（降AIGC场景）
-    user_message = request.messages[-1].content if request.messages else ""
+    prompt = build_rewrite_prompt(request.messages)
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        try:
-            # 调用 Ollama API (使用 generate 接口更简单)
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 f"{OLLAMA_HOST}/api/generate",
                 json={
                     "model": OLLAMA_MODEL,
-                    "prompt": user_message,
+                    "prompt": prompt,
                     "options": {
                         "temperature": request.temperature,
                         "num_predict": request.max_tokens,
+                        "stop": ["<|im_end|>", "<|endoftext|>"],
                     },
+                    "raw": True,
                     "stream": False,
                 }
             )
@@ -186,10 +221,12 @@ async def chat_completions(request: ChatCompletionRequest):
                 ],
             )
 
-        except httpx.TimeoutException:
-            raise HTTPException(status_code=504, detail="Ollama request timeout")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Completion failed: {str(e)}")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Ollama request timeout")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Completion failed: {str(e)}")
 
 
 def main():
