@@ -6,6 +6,10 @@ MODEL_URL="https://huggingface.co/skskk/aigc-rewriter/resolve/main/qwen3-merged-
 MODEL_FILE="$PROJECT_DIR/models/qwen3-merged-aigc_zhv3-Q4_K_M.gguf"
 OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3-aigc}"
 SERVER_PORT="${SERVER_PORT:-8000}"
+SERVER_MIN_TOKENS="${SERVER_MIN_TOKENS:-64}"
+SERVER_MAX_TOKENS="${SERVER_MAX_TOKENS:-256}"
+SERVER_MAX_TEMPERATURE="${SERVER_MAX_TEMPERATURE:-0.3}"
+OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-24h}"
 
 echo "=== Deploy AIGC Rewriter Ollama API ==="
 
@@ -54,7 +58,10 @@ if [ -n "$PIDS" ]; then
 fi
 
 : > server.log
-OLLAMA_MODEL="${OLLAMA_MODEL}:latest" SERVER_PORT="$SERVER_PORT" \
+OLLAMA_MODEL="${OLLAMA_MODEL}:latest" OLLAMA_KEEP_ALIVE="$OLLAMA_KEEP_ALIVE" \
+    SERVER_MIN_TOKENS="$SERVER_MIN_TOKENS" SERVER_MAX_TOKENS="$SERVER_MAX_TOKENS" \
+    SERVER_MAX_TEMPERATURE="$SERVER_MAX_TEMPERATURE" \
+    SERVER_PORT="$SERVER_PORT" \
     nohup uv run aigc_rewriter_server.py > server.log 2>&1 &
 
 sleep 2

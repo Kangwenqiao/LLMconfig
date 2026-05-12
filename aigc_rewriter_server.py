@@ -19,11 +19,14 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3-aigc:latest")
 SERVER_HOST = os.environ.get("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.environ.get("SERVER_PORT", "8000"))
+OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "24h")
+SERVER_MIN_TOKENS = int(os.environ.get("SERVER_MIN_TOKENS", "64"))
+SERVER_MAX_TOKENS = int(os.environ.get("SERVER_MAX_TOKENS", "256"))
+SERVER_MAX_TEMPERATURE = float(os.environ.get("SERVER_MAX_TEMPERATURE", "0.3"))
+SENTENCES_PER_CALL = max(1, int(os.environ.get("SENTENCES_PER_CALL", "2")))
 DEFAULT_REWRITE_INSTRUCTION = os.environ.get(
     "AIGC_REWRITE_INSTRUCTION",
-    (
-        "改写下面文本，保留原意、数字、术语和引用标记，不新增内容，不解释，只输出正文："
-    ),
+    "改写，保留原意，只输出正文：",
 )
 
 
@@ -36,8 +39,9 @@ class ChatCompletionRequest(BaseModel):
     model: str = "local"
     messages: list[ChatMessage]
     temperature: float = 0.2
-    max_tokens: int = 256
+    max_tokens: int = 64
     stream: bool = False
+    strength: str | None = None
 
 
 class ChatCompletionChoice(BaseModel):
@@ -65,6 +69,7 @@ def clean_model_output(content: str) -> str:
         else:
             text = text.removeprefix("<think>")
     text = text.replace("<|im_end|>", "").replace("<|endoftext|>", "")
+    text = text.lstrip(" -—,，、。；;：:")
     prefixes = ("改写后的正文：", "改写后的文本：", "输出：", "正文：")
     for prefix in prefixes:
         if text.startswith(prefix):
@@ -97,12 +102,98 @@ def remove_repeated_sentences(text: str) -> str:
     return "".join(result) if result else text
 
 
+def is_rewrite_acceptable(source_text: str, rewritten_text: str) -> bool:
+    """Reject outputs that are likely hallucinated, truncated, or expanded too much."""
+    source = re.sub(r"\s+", "", source_text)
+    rewritten = re.sub(r"\s+", "", rewritten_text)
+    if not source or not rewritten:
+        return False
+
+    ratio = len(rewritten) / len(source)
+    if ratio < 0.45 or ratio > 1.8:
+        return False
+
+    source_chars = {char for char in source if "\u4e00" <= char <= "\u9fff"}
+    rewritten_chars = {char for char in rewritten if "\u4e00" <= char <= "\u9fff"}
+    if source_chars and len(source_chars & rewritten_chars) / len(source_chars) < 0.35:
+        return False
+
+    return True
+
+
 def build_rewrite_prompt(messages: list[ChatMessage]) -> str:
     """Build a minimal raw prompt for the AIGC GGUF completion model."""
-    user_parts = [m.content.strip() for m in messages if m.role == "user" and m.content.strip()]
-    source_text = user_parts[-1] if user_parts else messages[-1].content.strip()
-
+    source_text = extract_source_text(messages)
     return f"{DEFAULT_REWRITE_INSTRUCTION}\n{source_text}"
+
+
+def extract_source_text(messages: list[ChatMessage]) -> str:
+    """Use only the final user message as the text to rewrite."""
+    user_parts = [m.content.strip() for m in messages if m.role == "user" and m.content.strip()]
+    return user_parts[-1] if user_parts else messages[-1].content.strip()
+
+
+def estimate_output_tokens(source_text: str) -> int:
+    """Choose enough room for paragraph rewriting without honoring huge client caps."""
+    estimated = max(SERVER_MIN_TOKENS, int(len(source_text) * 0.8))
+    return min(estimated, SERVER_MAX_TOKENS)
+
+
+def clamp_generation_options(request: ChatCompletionRequest, source_text: str) -> tuple[float, int]:
+    """Keep client-side high-throughput settings from exhausting this GGUF model."""
+    temperature = max(0.0, min(request.temperature, SERVER_MAX_TEMPERATURE))
+    adaptive_limit = estimate_output_tokens(source_text)
+    max_tokens = max(16, min(request.max_tokens, adaptive_limit))
+    return temperature, max_tokens
+
+
+def split_text(text: str, sentences_per_call: int = SENTENCES_PER_CALL) -> list[str]:
+    """Split long paragraphs so the completion model rewrites all parts."""
+    sentences = [s.strip() for s in re.split(r"(?<=[。！？!?；;])", text) if s.strip()]
+    if not sentences:
+        return [text]
+
+    chunks: list[str] = []
+    current: list[str] = []
+    for sentence in sentences:
+        current.append(sentence)
+        current_len = sum(len(item) for item in current)
+        if len(current) >= sentences_per_call or current_len >= 180:
+            chunks.append("".join(current))
+            current = []
+    if current:
+        chunks.append("".join(current))
+    return chunks
+
+
+async def call_ollama(client: httpx.AsyncClient, source_text: str, temperature: float, max_tokens: int) -> str:
+    prompt = f"{DEFAULT_REWRITE_INSTRUCTION}\n{source_text}"
+    resp = await client.post(
+        f"{OLLAMA_HOST}/api/generate",
+        json={
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+                "num_ctx": 1024,
+                "repeat_last_n": 64,
+                "repeat_penalty": 1.35,
+                "stop": ["<|im_end|>", "<|endoftext|>", "\n\n"],
+            },
+            "raw": True,
+            "stream": False,
+        }
+    )
+
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"Ollama error: {resp.text}"
+        )
+
+    return clean_model_output(resp.json().get("response", ""))
 
 
 @asynccontextmanager
@@ -192,35 +283,20 @@ async def chat_completions(request: ChatCompletionRequest):
     if not request.messages:
         raise HTTPException(status_code=400, detail="messages cannot be empty")
 
-    prompt = build_rewrite_prompt(request.messages)
+    source_text = extract_source_text(request.messages)
+    temperature, max_tokens = clamp_generation_options(request, source_text)
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                f"{OLLAMA_HOST}/api/generate",
-                json={
-                    "model": OLLAMA_MODEL,
-                    "prompt": prompt,
-                    "options": {
-                        "temperature": request.temperature,
-                        "num_predict": request.max_tokens,
-                        "repeat_penalty": 1.2,
-                        "stop": ["<|im_end|>", "<|endoftext|>", "\n\n"],
-                    },
-                    "raw": True,
-                    "stream": False,
-                }
-            )
-
-            if resp.status_code != 200:
-                raise HTTPException(
-                    status_code=resp.status_code,
-                    detail=f"Ollama error: {resp.text}"
-                )
-
-            result = resp.json()
-            content = result.get("response", "")
-            content = clean_model_output(content)
+            chunks = split_text(source_text)
+            rewritten_chunks = []
+            for chunk in chunks:
+                chunk_tokens = min(max_tokens, estimate_output_tokens(chunk))
+                rewritten = await call_ollama(client, chunk, temperature, chunk_tokens)
+                if not is_rewrite_acceptable(chunk, rewritten):
+                    rewritten = chunk
+                rewritten_chunks.append(rewritten)
+            content = "".join(rewritten_chunks).strip()
 
             return ChatCompletionResponse(
                 id=f"chatcmpl-{int(time.time())}",

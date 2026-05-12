@@ -65,6 +65,10 @@ OLLAMA_MODEL=qwen3-aigc:latest SERVER_PORT=8000 uv run aigc_rewriter_server.py
 | `OLLAMA_MODEL` | `qwen3-aigc:latest` | Ollama 模型名 |
 | `SERVER_HOST` | `0.0.0.0` | API 监听地址 |
 | `SERVER_PORT` | `8000` | API 监听端口 |
+| `OLLAMA_KEEP_ALIVE` | `24h` | Ollama 模型常驻时间 |
+| `SERVER_MIN_TOKENS` | `64` | 服务端最小输出 token 预算 |
+| `SERVER_MAX_TOKENS` | `256` | 服务端最大输出 token 上限 |
+| `SERVER_MAX_TEMPERATURE` | `0.3` | 服务端最大温度上限 |
 | `AIGC_REWRITE_INSTRUCTION` | 内置 minimal 指令 | 降 AIGC prompt 前缀 |
 
 ## OpenAI 格式使用
@@ -115,3 +119,12 @@ print(response.choices[0].message.content)
 - `POST /v1/chat/completions`：OpenAI 兼容聊天补全格式，实际执行降 AIGC 改写。
 
 注意：`stream: true` 当前不会返回 SSE 流，服务始终返回普通 JSON。
+
+## 性能策略
+
+为了配合客户端可能传入的 `max_tokens=2048`、`temperature=0.7`、多轮改写等配置，服务端会做保护：
+
+- `max_tokens` 会按输入长度自适应，默认范围是 `64-256`。
+- `temperature` 会被限制到 `SERVER_MAX_TEMPERATURE`，默认 `0.3`。
+- Ollama 请求带 `keep_alive=24h`，模型保持 GPU 常驻，避免每次冷加载。
+- 服务端只取最后一条 `user` 消息作为待改写文本，避免格式上下文拖慢 GGUF completion 模型。
