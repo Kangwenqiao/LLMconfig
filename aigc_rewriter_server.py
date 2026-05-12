@@ -8,6 +8,7 @@ import os
 import time
 import httpx
 import re
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -20,10 +21,12 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3-aigc:latest")
 SERVER_HOST = os.environ.get("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.environ.get("SERVER_PORT", "8000"))
 OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "24h")
-SERVER_MIN_TOKENS = int(os.environ.get("SERVER_MIN_TOKENS", "64"))
-SERVER_MAX_TOKENS = int(os.environ.get("SERVER_MAX_TOKENS", "256"))
-SERVER_MAX_TEMPERATURE = float(os.environ.get("SERVER_MAX_TEMPERATURE", "0.3"))
-SENTENCES_PER_CALL = max(1, int(os.environ.get("SENTENCES_PER_CALL", "2")))
+SERVER_MIN_TOKENS = int(os.environ.get("SERVER_MIN_TOKENS", "128"))
+SERVER_MAX_TOKENS = int(os.environ.get("SERVER_MAX_TOKENS", "512"))
+SERVER_MAX_TEMPERATURE = float(os.environ.get("SERVER_MAX_TEMPERATURE", "0.45"))
+SENTENCES_PER_CALL = max(1, int(os.environ.get("SENTENCES_PER_CALL", "5")))
+CHARS_PER_CALL = max(120, int(os.environ.get("CHARS_PER_CALL", "800")))
+CHUNK_CONCURRENCY = max(1, int(os.environ.get("CHUNK_CONCURRENCY", "2")))
 DEFAULT_REWRITE_INSTRUCTION = os.environ.get(
     "AIGC_REWRITE_INSTRUCTION",
     "改写，保留原意，只输出正文：",
@@ -39,7 +42,7 @@ class ChatCompletionRequest(BaseModel):
     model: str = "local"
     messages: list[ChatMessage]
     temperature: float = 0.2
-    max_tokens: int = 64
+    max_tokens: int = 512
     stream: bool = False
     strength: str | None = None
 
@@ -135,7 +138,7 @@ def extract_source_text(messages: list[ChatMessage]) -> str:
 
 def estimate_output_tokens(source_text: str) -> int:
     """Choose enough room for paragraph rewriting without honoring huge client caps."""
-    estimated = max(SERVER_MIN_TOKENS, int(len(source_text) * 0.8))
+    estimated = max(SERVER_MIN_TOKENS, int(len(source_text) * 1.2))
     return min(estimated, SERVER_MAX_TOKENS)
 
 
@@ -158,7 +161,7 @@ def split_text(text: str, sentences_per_call: int = SENTENCES_PER_CALL) -> list[
     for sentence in sentences:
         current.append(sentence)
         current_len = sum(len(item) for item in current)
-        if len(current) >= sentences_per_call or current_len >= 180:
+        if len(current) >= sentences_per_call or current_len >= CHARS_PER_CALL:
             chunks.append("".join(current))
             current = []
     if current:
@@ -178,8 +181,8 @@ async def call_ollama(client: httpx.AsyncClient, source_text: str, temperature: 
                 "temperature": temperature,
                 "num_predict": max_tokens,
                 "num_ctx": 1024,
-                "repeat_last_n": 64,
-                "repeat_penalty": 1.35,
+                "repeat_last_n": 128,
+                "repeat_penalty": 1.18,
                 "stop": ["<|im_end|>", "<|endoftext|>", "\n\n"],
             },
             "raw": True,
@@ -194,6 +197,21 @@ async def call_ollama(client: httpx.AsyncClient, source_text: str, temperature: 
         )
 
     return clean_model_output(resp.json().get("response", ""))
+
+
+async def rewrite_chunk(
+    client: httpx.AsyncClient,
+    semaphore: asyncio.Semaphore,
+    chunk: str,
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    async with semaphore:
+        chunk_tokens = min(max_tokens, estimate_output_tokens(chunk))
+        rewritten = await call_ollama(client, chunk, temperature, chunk_tokens)
+        if not is_rewrite_acceptable(chunk, rewritten):
+            return chunk
+        return rewritten
 
 
 @asynccontextmanager
@@ -289,13 +307,13 @@ async def chat_completions(request: ChatCompletionRequest):
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             chunks = split_text(source_text)
-            rewritten_chunks = []
-            for chunk in chunks:
-                chunk_tokens = min(max_tokens, estimate_output_tokens(chunk))
-                rewritten = await call_ollama(client, chunk, temperature, chunk_tokens)
-                if not is_rewrite_acceptable(chunk, rewritten):
-                    rewritten = chunk
-                rewritten_chunks.append(rewritten)
+            semaphore = asyncio.Semaphore(CHUNK_CONCURRENCY)
+            rewritten_chunks = await asyncio.gather(
+                *[
+                    rewrite_chunk(client, semaphore, chunk, temperature, max_tokens)
+                    for chunk in chunks
+                ]
+            )
             content = "".join(rewritten_chunks).strip()
 
             return ChatCompletionResponse(

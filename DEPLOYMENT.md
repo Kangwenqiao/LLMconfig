@@ -71,7 +71,8 @@ PIDS=$(ss -ltnp 2>/dev/null | sed -n 's/.*:8000.*pid=\([0-9][0-9]*\).*/\1/p' | s
 if [ -n "$PIDS" ]; then kill $PIDS; sleep 1; fi
 export PATH="$HOME/.local/bin:$PATH"
 OLLAMA_MODEL=qwen3-aigc:latest OLLAMA_KEEP_ALIVE=24h \
-SERVER_MIN_TOKENS=64 SERVER_MAX_TOKENS=256 SERVER_MAX_TEMPERATURE=0.3 SERVER_PORT=8000 \
+SERVER_MIN_TOKENS=128 SERVER_MAX_TOKENS=512 SERVER_MAX_TEMPERATURE=0.45 \
+SENTENCES_PER_CALL=5 CHARS_PER_CALL=800 CHUNK_CONCURRENCY=2 SERVER_PORT=8000 \
   nohup uv run aigc_rewriter_server.py > server.log 2>&1 &
 ```
 
@@ -98,8 +99,9 @@ curl -X POST http://117.50.89.11/v1/chat/completions \
 
 当前服务端已针对客户端配置做限流：
 
-- 客户端传 `max_tokens=2048` 时，服务端会按输入长度自适应，默认最多生成 `256` token。
-- 客户端传 `temperature=0.7` 时，服务端实际最高使用 `0.3`。
+- 客户端传 `max_tokens=2048` 时，服务端会按输入长度自适应，默认最多生成 `512` token。
+- 客户端传 `temperature=0.7` 时，服务端实际最高使用 `0.45`。
+- 默认每 `5` 句送入一次模型，避免过度切碎影响降 AIGC 效果。
 - Ollama 请求带 `keep_alive=24h`，`ollama ps` 应显示 `24 hours from now`。
 
 短句单次本机 API 调用通常约 `1s`；长段会给更多输出空间，耗时随段落长度增加。如果客户端启用 `rewrite_rounds=3`，总耗时会接近单次耗时的 3 倍。
