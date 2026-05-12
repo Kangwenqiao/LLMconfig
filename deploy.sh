@@ -1,86 +1,62 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-echo "=== 部署 AIGC Rewriter 服务 ==="
+PROJECT_DIR="${PROJECT_DIR:-$HOME/LLMconfig}"
+MODEL_URL="https://huggingface.co/skskk/aigc-rewriter/resolve/main/qwen3-merged-aigc_zhv3-Q4_K_M.gguf"
+MODEL_FILE="$PROJECT_DIR/models/qwen3-merged-aigc_zhv3-Q4_K_M.gguf"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3-aigc}"
+SERVER_PORT="${SERVER_PORT:-8000}"
 
-# 安装 uv
-if ! command -v uv &> /dev/null; then
-    echo "安装 uv..."
+echo "=== Deploy AIGC Rewriter Ollama API ==="
+
+if ! command -v uv >/dev/null 2>&1; then
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# 克隆或更新项目
-PROJECT_DIR="$HOME/LLMconfig"
-if [ -d "$PROJECT_DIR" ]; then
-    echo "更新项目..."
+if ! command -v ollama >/dev/null 2>&1; then
+    echo "ollama is required. Install and start ollama first."
+    exit 1
+fi
+
+if [ -d "$PROJECT_DIR/.git" ]; then
     cd "$PROJECT_DIR"
     git pull
 else
-    echo "克隆项目..."
     git clone https://github.com/Kangwenqiao/LLMconfig.git "$PROJECT_DIR"
     cd "$PROJECT_DIR"
 fi
 
-# 创建模型目录
 mkdir -p models
 
-# 下载模型（如果不存在）
-MODEL_FILE="models/qwen3-merged-aigc_zhv3-Q4_K_M.gguf"
 if [ ! -f "$MODEL_FILE" ]; then
-    echo "下载模型（约 1.1GB）..."
-    wget -O "$MODEL_FILE" \
-        https://huggingface.co/skskk/aigc-rewriter/resolve/main/qwen3-merged-aigc_zhv3-Q4_K_M.gguf
-else
-    echo "模型已存在，跳过下载"
+    curl -L -C - --fail -o "$MODEL_FILE" "$MODEL_URL"
 fi
 
-# 安装依赖
-echo "安装依赖..."
-uv sync
-
-# 创建 systemd 服务
-echo "创建 systemd 服务..."
-sudo tee /etc/systemd/system/aigc-rewriter.service > /dev/null <<'EOF'
-[Unit]
-Description=AIGC Rewriter API Service
-After=network.target
-
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/LLMconfig
-Environment="PATH=/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-Environment="LLM_HOST=0.0.0.0"
-Environment="LLM_PORT=1002"
-Environment="LLM_WORKERS=1"
-Environment="LLM_GPU_LAYERS=-1"
-Environment="LLM_N_CTX=4096"
-Environment="LLM_IDLE_TIMEOUT=300"
-ExecStart=/home/ubuntu/.local/bin/uv run aigc_rewriter_server.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
+cat > Modelfile.qwen3-aigc <<EOF
+FROM ./models/qwen3-merged-aigc_zhv3-Q4_K_M.gguf
+PARAMETER temperature 0.7
+PARAMETER num_ctx 4096
 EOF
 
-# 重载 systemd
-sudo systemctl daemon-reload
+ollama create "$OLLAMA_MODEL" -f Modelfile.qwen3-aigc
 
-# 启动服务
-echo "启动服务..."
-sudo systemctl enable aigc-rewriter
-sudo systemctl restart aigc-rewriter
+for model in qwen2.5:1.5b deepseek-r1:1.5b; do
+    ollama rm "$model" >/dev/null 2>&1 || true
+done
 
-# 等待服务启动
-sleep 5
+uv sync
 
-# 检查服务状态
-sudo systemctl status aigc-rewriter --no-pager
+PIDS=$(ss -ltnp 2>/dev/null | sed -n "s/.*:${SERVER_PORT}.*pid=\([0-9][0-9]*\).*/\1/p" | sort -u)
+if [ -n "$PIDS" ]; then
+    kill $PIDS
+    sleep 1
+fi
 
-echo ""
-echo "=== 部署完成 ==="
-echo "服务地址: http://117.50.218.77:1002"
-echo "健康检查: curl http://117.50.218.77:1002/"
-echo "API 文档: http://117.50.218.77:1002/docs"
+: > server.log
+OLLAMA_MODEL="${OLLAMA_MODEL}:latest" SERVER_PORT="$SERVER_PORT" \
+    nohup uv run aigc_rewriter_server.py > server.log 2>&1 &
+
+sleep 2
+curl -s "http://127.0.0.1:${SERVER_PORT}/"
+echo

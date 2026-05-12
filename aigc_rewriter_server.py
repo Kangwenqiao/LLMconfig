@@ -16,7 +16,7 @@ import uvicorn
 
 # Ollama 配置
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3-aigc")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3-aigc:latest")
 SERVER_HOST = os.environ.get("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.environ.get("SERVER_PORT", "8000"))
 DEFAULT_REWRITE_INSTRUCTION = os.environ.get(
@@ -77,14 +77,20 @@ def clean_model_output(content: str) -> str:
 def remove_repeated_sentences(text: str) -> str:
     """Trim obvious sentence-level loops from small GGUF completion models."""
     sentences = [s for s in re.split(r"(?<=[。！？!?])", text) if s.strip()]
-    if len(sentences) < 3:
+    if len(sentences) < 2:
         return text
 
     result: list[str] = []
     seen: set[str] = set()
     for sentence in sentences:
         normalized = re.sub(r"\s+", "", sentence)
+        previous = re.sub(r"\s+", "", result[-1]) if result else ""
         if normalized in seen:
+            break
+        if previous and previous.endswith(normalized) and len(previous) - len(normalized) <= 2:
+            result[-1] = sentence
+            break
+        if previous and normalized.endswith(previous) and len(normalized) - len(previous) <= 2:
             break
         seen.add(normalized)
         result.append(sentence)
