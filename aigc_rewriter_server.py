@@ -150,12 +150,12 @@ async def chat_completions(request: ChatCompletionRequest):
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         try:
-            # 调用 Ollama API
+            # 调用 Ollama API (使用 generate 接口更简单)
             resp = await client.post(
-                f"{OLLAMA_HOST}/api/chat",
+                f"{OLLAMA_HOST}/api/generate",
                 json={
                     "model": OLLAMA_MODEL,
-                    "messages": [{"role": m.role, "content": m.content} for m in request.messages],
+                    "prompt": user_message,
                     "options": {
                         "temperature": request.temperature,
                         "num_predict": request.max_tokens,
@@ -171,7 +171,7 @@ async def chat_completions(request: ChatCompletionRequest):
                 )
 
             result = resp.json()
-            content = result.get("message", {}).get("content", "")
+            content = result.get("response", "")
             content = clean_model_output(content)
 
             return ChatCompletionResponse(
