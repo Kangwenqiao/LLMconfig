@@ -7,6 +7,7 @@ OpenAI-compatible API Server
 import os
 import time
 import httpx
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -34,8 +35,8 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str = "local"
     messages: list[ChatMessage]
-    temperature: float = 0.7
-    max_tokens: int = 2048
+    temperature: float = 0.2
+    max_tokens: int = 256
     stream: bool = False
 
 
@@ -69,7 +70,25 @@ def clean_model_output(content: str) -> str:
         if text.startswith(prefix):
             text = text.removeprefix(prefix)
             break
+    text = remove_repeated_sentences(text)
     return text.strip()
+
+
+def remove_repeated_sentences(text: str) -> str:
+    """Trim obvious sentence-level loops from small GGUF completion models."""
+    sentences = [s for s in re.split(r"(?<=[。！？!?])", text) if s.strip()]
+    if len(sentences) < 3:
+        return text
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for sentence in sentences:
+        normalized = re.sub(r"\s+", "", sentence)
+        if normalized in seen:
+            break
+        seen.add(normalized)
+        result.append(sentence)
+    return "".join(result) if result else text
 
 
 def build_rewrite_prompt(messages: list[ChatMessage]) -> str:
@@ -179,6 +198,7 @@ async def chat_completions(request: ChatCompletionRequest):
                     "options": {
                         "temperature": request.temperature,
                         "num_predict": request.max_tokens,
+                        "repeat_penalty": 1.2,
                         "stop": ["<|im_end|>", "<|endoftext|>", "\n\n"],
                     },
                     "raw": True,
