@@ -68,6 +68,14 @@ ollama rm qwen3-aigc:latest || true
 OLLAMA_MODEL=qwen3-aigc-chat:latest SERVER_PORT=8000 uv run aigc_rewriter_server.py
 ```
 
+服务器部署建议使用 watchdog，自动拉起 Ollama、API 和 nginx：
+
+```bash
+chmod +x scripts/watchdog.sh
+PROJECT_DIR=/root/LLMconfig OLLAMA_MODEL=qwen3-aigc-chat:latest SERVER_PORT=8000 \
+  scripts/watchdog.sh install
+```
+
 环境变量：
 
 | 变量 | 默认值 | 说明 |

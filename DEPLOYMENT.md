@@ -51,15 +51,22 @@ nameserver 100.90.90.100
 /etc/resolv.conf
 ```
 
-## 启动命令
+## 守护进程
 
-当前使用 `nohup` 启动：
+当前使用 `scripts/watchdog.sh` 守护。它会检查并自动拉起：
+
+- Ollama：`127.0.0.1:11434`
+- API：`0.0.0.0:8000`
+- nginx：`0.0.0.0:80`
+
+启动守护循环：
 
 ```bash
 cd /root/LLMconfig
 export PATH="$HOME/.local/bin:$PATH"
-OLLAMA_MODEL=qwen3-aigc-chat:latest SERVER_PORT=8000 \
-  nohup uv run aigc_rewriter_server.py > server.log 2>&1 &
+PROJECT_DIR=/root/LLMconfig OLLAMA_MODEL=qwen3-aigc-chat:latest \
+OLLAMA_KEEP_ALIVE=24h SERVER_PORT=8000 \
+  scripts/watchdog.sh install
 ```
 
 ## 重启
@@ -67,11 +74,16 @@ OLLAMA_MODEL=qwen3-aigc-chat:latest SERVER_PORT=8000 \
 ```bash
 ssh -p 23 root@117.50.89.11
 cd /root/LLMconfig
-PIDS=$(ss -ltnp 2>/dev/null | sed -n 's/.*:8000.*pid=\([0-9][0-9]*\).*/\1/p' | sort -u)
-if [ -n "$PIDS" ]; then kill $PIDS; sleep 1; fi
 export PATH="$HOME/.local/bin:$PATH"
-OLLAMA_MODEL=qwen3-aigc-chat:latest OLLAMA_KEEP_ALIVE=24h SERVER_PORT=8000 \
-  nohup uv run aigc_rewriter_server.py > server.log 2>&1 &
+scripts/watchdog.sh once
+```
+
+日志：
+
+```text
+/root/LLMconfig/watchdog.log
+/root/LLMconfig/server.log
+/root/ollama.log
 ```
 
 ## 验证

@@ -58,16 +58,10 @@ done
 
 uv sync
 
-PIDS=$(ss -ltnp 2>/dev/null | sed -n "s/.*:${SERVER_PORT}.*pid=\([0-9][0-9]*\).*/\1/p" | sort -u)
-if [ -n "$PIDS" ]; then
-    kill $PIDS
-    sleep 1
-fi
-
-: > server.log
-OLLAMA_MODEL="$OLLAMA_MODEL" OLLAMA_KEEP_ALIVE="$OLLAMA_KEEP_ALIVE" \
-    SERVER_PORT="$SERVER_PORT" \
-    nohup uv run aigc_rewriter_server.py > server.log 2>&1 &
+chmod +x scripts/watchdog.sh
+PROJECT_DIR="$PROJECT_DIR" OLLAMA_MODEL="$OLLAMA_MODEL" \
+    OLLAMA_KEEP_ALIVE="$OLLAMA_KEEP_ALIVE" SERVER_PORT="$SERVER_PORT" \
+    scripts/watchdog.sh install
 
 sleep 2
 curl -s "http://127.0.0.1:${SERVER_PORT}/"
